@@ -1,0 +1,36 @@
+# make verify on the devbox, 2026-10-31
+# executor image: flyte-devbox:latest b8ae6c76e93a (branch feat/cloud_events @ 085240c1)
+# runs from make run: hello=r6w6kv2sn7kq2hv8mqx8 boom=rn9w2rxnzk7mlctlx25n
+
+scripts/verify.sh "$(cat .runs/hello)" 11
+== run r6w6kv2sn7kq2hv8mqx8
+-- hop 1: k8s Events on TaskActions
+     total=62 succeeded=11 failed=0 running=15
+  PASS  ActionSucceeded = 11
+  PASS  ActionRunning events carry flyte.org/info (executor image has the PR)
+-- hop 2: exporter
+     received=62 discarded=0 throttled-log-lines=0
+  PASS  exporter received every event (62 >= 62)
+  PASS  nothing discarded as too old
+-- hop 3: Kafka (topic flyte-action-events)
+     messages=62 succeeded=11 info-mismatch=0
+  PASS  Kafka has 11 ActionSucceeded for this run
+  PASS  flyte.org/info decodes to the same phase on every message
+  PASS  every k8s Event reached Kafka (62 >= 62)
+== PASS
+scripts/verify.sh "$(cat .runs/boom)" 0
+== run rn9w2rxnzk7mlctlx25n
+-- hop 1: k8s Events on TaskActions
+     total=4 succeeded=0 failed=1 running=1
+  PASS  ActionSucceeded = 0
+  PASS  ActionRunning events carry flyte.org/info (executor image has the PR)
+-- hop 2: exporter
+     received=4 discarded=0 throttled-log-lines=0
+  PASS  exporter received every event (4 >= 4)
+  PASS  nothing discarded as too old
+-- hop 3: Kafka (topic flyte-action-events)
+     messages=4 succeeded=0 info-mismatch=0
+  PASS  Kafka has 0 ActionSucceeded for this run
+  PASS  flyte.org/info decodes to the same phase on every message
+  PASS  every k8s Event reached Kafka (4 >= 4)
+== PASS

@@ -1,0 +1,131 @@
+# resmoio/kubernetes-event-exporter v1.7 for the devbox test. Devbox only.
+# Based on the upstream deploy/ manifests at tag v1.7.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: event-exporter
+  namespace: event-export
+---
+# Upstream grants get/list/watch on everything. The exporter needs events, and
+# "get" on the involved object (TaskAction) to look up its labels and annotations.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: event-exporter
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: event-exporter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: event-exporter
+subjects:
+  - kind: ServiceAccount
+    name: event-exporter
+    namespace: event-export
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: event-exporter-cfg
+  namespace: event-export
+data:
+  config.yaml: |
+    logLevel: debug
+    logFormat: json
+    clusterName: devbox
+    # Default is 5s. An event whose eventTime is older is dropped silently.
+    maxEventAgeSeconds: 60
+    # Default is client-go's 5 QPS / 10 burst. Each new involved object costs a
+    # discovery + GET lookup; at 5 QPS the exporter fell ~1 min behind on one
+    # hello.py run and dropped 60 of 65 TaskAction events as too old.
+    kubeQPS: 100
+    kubeBurst: 200
+    route:
+      routes:
+        - match:
+            # Every matching rule sends to its receiver.
+            # "annotations:" here would match the TaskAction's annotations,
+            # not the Event's flyte.org/* annotations, so it is not used.
+            - receiver: stdout
+              apiVersion: "^flyte.org/v1$"
+              kind: "^TaskAction$"
+              reason: "^Action"
+            - receiver: kafka
+              apiVersion: "^flyte.org/v1$"
+              kind: "^TaskAction$"
+              reason: "^Action"
+            - receiver: kafka-layout
+              apiVersion: "^flyte.org/v1$"
+              kind: "^TaskAction$"
+              reason: "^Action"
+    receivers:
+      - name: stdout
+        stdout: {}
+      # No layout: the message is the whole event as JSON,
+      # including metadata.annotations.
+      - name: kafka
+        kafka:
+          clientId: flyte-event-exporter
+          topic: flyte-action-events
+          brokers:
+            - kafka.event-export.svc.cluster.local:9092
+      # Layout: checks that the Event's own annotations resolve in a template.
+      - name: kafka-layout
+        kafka:
+          clientId: flyte-event-exporter-layout
+          topic: flyte-action-events-layout
+          brokers:
+            - kafka.event-export.svc.cluster.local:9092
+          layout:
+            reason: "{{ .Reason }}"
+            project: '{{ index .Annotations "flyte.org/project" }}'
+            runName: '{{ index .Annotations "flyte.org/run-name" }}'
+            actionName: '{{ index .Annotations "flyte.org/action-name" }}'
+            attempt: '{{ index .Annotations "flyte.org/attempt" }}'
+            phase: '{{ index .Annotations "flyte.org/phase" }}'
+            version: '{{ index .Annotations "flyte.org/version" }}'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: event-exporter
+  namespace: event-export
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: event-exporter
+  template:
+    metadata:
+      labels:
+        app: event-exporter
+    spec:
+      serviceAccountName: event-exporter
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: event-exporter
+          image: ghcr.io/resmoio/kubernetes-event-exporter:v1.7
+          imagePullPolicy: IfNotPresent
+          args:
+            - -conf=/data/config.yaml
+          volumeMounts:
+            - mountPath: /data
+              name: cfg
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: cfg
+          configMap:
+            name: event-exporter-cfg
